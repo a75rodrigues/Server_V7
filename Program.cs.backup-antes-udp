@@ -1,0 +1,207 @@
+﻿using System.Security.Cryptography;
+using System.Text;
+using UHD.Servidor;
+using UHD.Sincronizacao;
+
+// =====================================================================
+// SERVIDOR CENTRAL UHD  (fase 2: sincronização)
+//
+// Arrancar:      dotnet run
+// Endereço:      appsettings.json -> "urls"
+// Chave:         appsettings.json -> "ChaveAcesso" (a mesma da aplicação, em Administração > Servidor)
+// Base de dados: appsettings.json -> "CaminhoBD" (por defeito Dados/uhd-servidor.db)
+// Verificar:     abrir no browser  http://localhost:5080/
+// =====================================================================
+
+// Ativa o SQLite com cifra (SQLCipher) antes de qualquer ligação à base de dados
+SQLitePCL.Batteries_V2.Init();
+
+var builder = WebApplication.CreateBuilder(args);
+
+string urls = builder.Configuration["urls"] ?? "http://0.0.0.0:5080";
+builder.WebHost.UseUrls(urls);
+
+var app = builder.Build();
+
+string chaveEsperada = app.Configuration["ChaveAcesso"] ?? string.Empty;
+var bd = new BaseDados(app.Configuration["CaminhoBD"] ?? "Dados/uhd-servidor.db", app.Configuration["ChaveBD"]);
+var servico = new ServicoSincronizacao(bd);
+
+Console.WriteLine("==============================================");
+Console.WriteLine(" SERVIDOR CENTRAL UHD");
+Console.WriteLine($" À escuta em   : {urls}");
+Console.WriteLine($" Base de dados : {bd.Caminho}");
+Console.WriteLine($" Cifra da BD   : {(bd.Cifrada ? "ativa" : "DESATIVADA (defina ChaveBD em appsettings.json)")}");
+Console.WriteLine($" Chave         : {(string.IsNullOrWhiteSpace(chaveEsperada) ? "NÃO DEFINIDA (appsettings.json não encontrado?)" : "definida (" + chaveEsperada.Length + " caracteres)")}");
+Console.WriteLine(" Teste no browser: http://localhost:5080/");
+Console.WriteLine("==============================================");
+
+if (string.IsNullOrWhiteSpace(chaveEsperada) || chaveEsperada == "ALTERAR-ESTA-CHAVE")
+{
+    Console.WriteLine("ATENÇÃO: defina uma chave própria em appsettings.json (\"ChaveAcesso\") antes de usar em produção.");
+}
+
+// Regista cada pedido recebido
+app.Use(async (contexto, seguinte) =>
+{
+    await seguinte();
+    Console.WriteLine($"{DateTime.Now:HH:mm:ss}  {contexto.Request.Method} {contexto.Request.Path}  ->  {contexto.Response.StatusCode}");
+});
+
+// Todos os pedidos a /api exigem a chave de acesso no cabeçalho "X-Chave-Acesso"
+app.Use(async (contexto, seguinte) =>
+{
+    if (contexto.Request.Path.StartsWithSegments("/api"))
+    {
+        string recebida = contexto.Request.Headers["X-Chave-Acesso"].ToString();
+
+        bool valida =
+            !string.IsNullOrEmpty(chaveEsperada) &&
+            CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(recebida),
+                Encoding.UTF8.GetBytes(chaveEsperada));
+
+        if (!valida)
+        {
+            contexto.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await contexto.Response.WriteAsync("Chave de acesso inválida.");
+            return;
+        }
+    }
+
+    await seguinte();
+});
+
+// Distribuição de versões do UHD (configurar DiretorioDistribuicao no servidor).
+// Esta rota não usa a chave da API: limitar o acesso à rede interna através da firewall/reverse proxy.
+string diretorioDistribuicao = Path.GetFullPath(
+    app.Configuration["DiretorioDistribuicao"] ??
+    Environment.GetEnvironmentVariable("DISTRIBUICAO_DIRETORIO") ??
+    Path.Combine(AppContext.BaseDirectory, "Distribuicao"));
+
+app.MapGet("/releases/{ficheiro}", IResult (string ficheiro) =>
+{
+    // Aceita apenas nomes de ficheiro simples; impede caminhos relativos ou acesso a outras pastas.
+    if (ficheiro != Path.GetFileName(ficheiro) ||
+        !(ficheiro.Equals("manifest.json", StringComparison.OrdinalIgnoreCase) ||
+          (ficheiro.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) &&
+           ficheiro.Length <= 120)))
+        return Results.BadRequest("Nome de ficheiro de distribuição inválido.");
+
+    string caminho = Path.GetFullPath(Path.Combine(diretorioDistribuicao, ficheiro));
+    if (!caminho.StartsWith(diretorioDistribuicao + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest("Caminho inválido.");
+    if (!File.Exists(caminho))
+        return Results.NotFound("Ficheiro de distribuição não encontrado.");
+
+    string tipo = ficheiro.Equals("manifest.json", StringComparison.OrdinalIgnoreCase)
+        ? "application/json"
+        : "application/zip";
+    return Results.File(caminho, tipo, enableRangeProcessing: true);
+});
+
+app.MapGet("/", () => "Servidor UHD ativo.");
+
+app.MapGet("/api/ping", () => Results.Ok(new
+{
+    servidor = "UHD",
+    versao = "2.0-sincronizacao",
+    hora = DateTime.Now
+}));
+
+// Login central: permite autenticar um funcionário que ainda não existe na BD local.
+app.MapPost("/api/login", (PedidoLogin pedido) =>
+{
+    string numero = (pedido.NumeroFuncionario ?? string.Empty).Trim();
+    string password = pedido.Password ?? string.Empty;
+    if (numero.Length == 0 || password.Length == 0)
+        return Results.BadRequest(new { mensagem = "Indique o número de funcionário e a palavra-passe." });
+
+    using var ligacao = bd.Abrir();
+    using var cmd = ligacao.CreateCommand();
+    cmd.CommandText = @"SELECT Dados FROM Entidades
+                        WHERE Tabela = 'Utilizadores' AND LOWER(Chave) = LOWER($numero)
+                        LIMIT 1;";
+    cmd.Parameters.AddWithValue("$numero", numero);
+    string? json = cmd.ExecuteScalar() as string;
+    if (string.IsNullOrWhiteSpace(json)) return Results.Unauthorized();
+
+    using var documento = System.Text.Json.JsonDocument.Parse(json);
+    var raiz = documento.RootElement;
+    string Campo(string nome) =>
+        raiz.TryGetProperty(nome, out var valor) && valor.ValueKind == System.Text.Json.JsonValueKind.String
+            ? valor.GetString() ?? string.Empty : string.Empty;
+    bool Bool(string nome, bool padrao = false)
+    {
+        if (!raiz.TryGetProperty(nome, out var valor)) return padrao;
+        if (valor.ValueKind == System.Text.Json.JsonValueKind.True) return true;
+        if (valor.ValueKind == System.Text.Json.JsonValueKind.False) return false;
+        if (valor.ValueKind == System.Text.Json.JsonValueKind.Number && valor.TryGetInt32(out int n)) return n != 0;
+        return padrao;
+    }
+
+    string hash = Campo("PasswordHash");
+    if (hash.Length == 0 || !VerificarPasswordCentral(password, hash)) return Results.Unauthorized();
+    if (!Bool("Ativo", true) || Bool("Bloqueado"))
+        return Results.Json(new { mensagem = "Esta conta encontra-se inativa ou bloqueada." },
+            statusCode: StatusCodes.Status403Forbidden);
+
+    return Results.Ok(new
+    {
+        numeroFuncionario = Campo("NumeroFuncionario"),
+        nome = Campo("Nome"),
+        perfil = Campo("Perfil"),
+        permissoes = Campo("Permissoes"),
+        primeiroAcesso = Bool("PrimeiroAcesso")
+    });
+});
+
+static bool VerificarPasswordCentral(string password, string hashGuardado)
+{
+    try
+    {
+        if (hashGuardado.StartsWith("PBKDF2$", StringComparison.Ordinal))
+        {
+            string[] partes = hashGuardado.Split('$');
+            if (partes.Length != 5 || !int.TryParse(partes[2], out int iteracoes) ||
+                iteracoes < 1 || iteracoes > 5_000_000) return false;
+            HashAlgorithmName algoritmo = partes[1] switch
+            {
+                "SHA256" => HashAlgorithmName.SHA256,
+                "SHA512" => HashAlgorithmName.SHA512,
+                _ => default
+            };
+            if (algoritmo == default) return false;
+            byte[] salt = Convert.FromBase64String(partes[3]);
+            byte[] original = Convert.FromBase64String(partes[4]);
+            byte[] teste = Rfc2898DeriveBytes.Pbkdf2(password, salt, iteracoes, algoritmo, original.Length);
+            return CryptographicOperations.FixedTimeEquals(teste, original);
+        }
+
+        string[] antigo = hashGuardado.Split(':');
+        if (antigo.Length != 2) return false;
+        byte[] saltAntigo = Convert.FromBase64String(antigo[0]);
+        byte[] hashAntigo = Convert.FromBase64String(antigo[1]);
+        byte[] testeAntigo = Rfc2898DeriveBytes.Pbkdf2(password, saltAntigo, 100_000, HashAlgorithmName.SHA256, hashAntigo.Length);
+        return CryptographicOperations.FixedTimeEquals(testeAntigo, hashAntigo);
+    }
+    catch (FormatException) { return false; }
+}
+
+// Sincronização: o posto envia o que tem de novo e recebe o que mudou nos outros
+app.MapPost("/api/sync", async (PedidoSincronizacao pedido) =>
+{
+    try
+    {
+        return Results.Ok(await servico.ProcessarAsync(pedido));
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"ERRO na sincronização: {ex}");
+        return Results.Problem(ex.Message);
+    }
+});
+
+app.Run();
+
+public sealed record PedidoLogin(string? NumeroFuncionario, string? Password);
