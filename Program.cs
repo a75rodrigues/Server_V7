@@ -1,4 +1,4 @@
-﻿using System.Security.Cryptography;
+using System.Security.Cryptography;
 using System.Text;
 using UHD.Servidor;
 using UHD.Sincronizacao;
@@ -18,13 +18,23 @@ SQLitePCL.Batteries_V2.Init();
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Em desenvolvimento usa a pasta do projeto; publicado, usa a pasta do executável.
+string raizServidor = File.Exists(Path.Combine(builder.Environment.ContentRootPath, "UHD.Servidor.csproj"))
+    ? builder.Environment.ContentRootPath
+    : AppContext.BaseDirectory;
+
+string ResolverCaminho(string caminho) => Path.IsPathRooted(caminho)
+    ? Path.GetFullPath(caminho)
+    : Path.GetFullPath(Path.Combine(raizServidor, caminho));
+
 string urls = builder.Configuration["urls"] ?? "http://0.0.0.0:5080";
 builder.WebHost.UseUrls(urls);
 
 var app = builder.Build();
 
 string chaveEsperada = app.Configuration["ChaveAcesso"] ?? string.Empty;
-var bd = new BaseDados(app.Configuration["CaminhoBD"] ?? "Dados/uhd-servidor.db", app.Configuration["ChaveBD"]);
+string caminhoBD = ResolverCaminho(app.Configuration["CaminhoBD"] ?? Path.Combine("Dados", "uhd-servidor.db"));
+var bd = new BaseDados(caminhoBD, app.Configuration["ChaveBD"]);
 var servico = new ServicoSincronizacao(bd);
 
 Console.WriteLine("==============================================");
@@ -74,10 +84,10 @@ app.Use(async (contexto, seguinte) =>
 
 // Distribuição de versões do UHD (configurar DiretorioDistribuicao no servidor).
 // Esta rota não usa a chave da API: limitar o acesso à rede interna através da firewall/reverse proxy.
-string diretorioDistribuicao = Path.GetFullPath(
+string diretorioDistribuicao = ResolverCaminho(
     app.Configuration["DiretorioDistribuicao"] ??
     Environment.GetEnvironmentVariable("DISTRIBUICAO_DIRETORIO") ??
-    Path.Combine(AppContext.BaseDirectory, "Distribuicao"));
+    "Distribuicao");
 
 app.MapGet("/releases/{ficheiro}", IResult (string ficheiro) =>
 {
