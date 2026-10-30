@@ -102,6 +102,14 @@ namespace UHD.Servidor
                     CodigoHash TEXT NOT NULL,
                     Consumido INTEGER NOT NULL DEFAULT 0,
                     CriadoEm TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS PostosWindows (
+                    IdentidadeWindows TEXT NOT NULL,
+                    NomeComputador TEXT NOT NULL,
+                    PostoId TEXT NOT NULL UNIQUE,
+                    CriadoEm TEXT NOT NULL,
+                    PRIMARY KEY (IdentidadeWindows, NomeComputador),
+                    FOREIGN KEY (PostoId) REFERENCES Postos(Id)
                 );";
             cmd.ExecuteNonQuery();
         }
@@ -164,6 +172,82 @@ namespace UHD.Servidor
             inserir.Parameters.AddWithValue("$hash", tokenHash);
             inserir.Parameters.AddWithValue("$agora", DateTime.UtcNow.ToString("O"));
             inserir.ExecuteNonQuery();
+            tx.Commit();
+            return (id, token);
+        }
+
+
+        /// <summary>
+        /// Regista (ou renova a credencial de) um posto autenticado pelo Windows.
+        /// A identidade Windows é obtida pelo servidor; o cliente só indica o nome do computador.
+        /// </summary>
+        public (string Id, string Token) RegistarPostoWindows(string identidadeWindows, string nomeComputador)
+        {
+            identidadeWindows = (identidadeWindows ?? string.Empty).Trim();
+            nomeComputador = (nomeComputador ?? string.Empty).Trim();
+            if (identidadeWindows.Length == 0 || nomeComputador.Length == 0)
+                throw new ArgumentException("A identidade Windows e o nome do computador são obrigatórios.");
+
+            using var ligacao = Abrir();
+            using var tx = ligacao.BeginTransaction();
+
+            string? id = null;
+            using (var procurar = ligacao.CreateCommand())
+            {
+                procurar.Transaction = tx;
+                procurar.CommandText = @"SELECT PostoId FROM PostosWindows
+                    WHERE IdentidadeWindows = $identidade COLLATE NOCASE
+                      AND NomeComputador = $nome COLLATE NOCASE;";
+                procurar.Parameters.AddWithValue("$identidade", identidadeWindows);
+                procurar.Parameters.AddWithValue("$nome", nomeComputador);
+                id = procurar.ExecuteScalar() as string;
+            }
+
+            string token = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+            string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(token)));
+            string agora = DateTime.UtcNow.ToString("O");
+
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                id = Guid.NewGuid().ToString("D");
+                using var inserirPosto = ligacao.CreateCommand();
+                inserirPosto.Transaction = tx;
+                inserirPosto.CommandText = @"INSERT INTO Postos
+                    (Id, Nome, TokenHash, Ativo, CriadoEm, UltimoAcesso)
+                    VALUES ($id, $nome, $hash, 1, $agora, $agora);";
+                inserirPosto.Parameters.AddWithValue("$id", id);
+                inserirPosto.Parameters.AddWithValue("$nome", nomeComputador);
+                inserirPosto.Parameters.AddWithValue("$hash", hash);
+                inserirPosto.Parameters.AddWithValue("$agora", agora);
+                inserirPosto.ExecuteNonQuery();
+
+                using var inserirWindows = ligacao.CreateCommand();
+                inserirWindows.Transaction = tx;
+                inserirWindows.CommandText = @"INSERT INTO PostosWindows
+                    (IdentidadeWindows, NomeComputador, PostoId, CriadoEm)
+                    VALUES ($identidade, $nome, $id, $agora);";
+                inserirWindows.Parameters.AddWithValue("$identidade", identidadeWindows);
+                inserirWindows.Parameters.AddWithValue("$nome", nomeComputador);
+                inserirWindows.Parameters.AddWithValue("$id", id);
+                inserirWindows.Parameters.AddWithValue("$agora", agora);
+                inserirWindows.ExecuteNonQuery();
+            }
+            else
+            {
+                using var atualizar = ligacao.CreateCommand();
+                atualizar.Transaction = tx;
+                atualizar.CommandText = @"UPDATE Postos
+                    SET Nome = $nome, TokenHash = $hash, Ativo = 1, UltimoAcesso = $agora
+                    WHERE Id = $id;";
+                atualizar.Parameters.AddWithValue("$nome", nomeComputador);
+                atualizar.Parameters.AddWithValue("$hash", hash);
+                atualizar.Parameters.AddWithValue("$agora", agora);
+                atualizar.Parameters.AddWithValue("$id", id);
+                if (atualizar.ExecuteNonQuery() != 1)
+                    throw new InvalidOperationException("O posto Windows associado não existe na tabela de postos.");
+            }
+
             tx.Commit();
             return (id, token);
         }
