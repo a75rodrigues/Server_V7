@@ -113,8 +113,16 @@ namespace UHD.Servidor
                 System.Text.Encoding.UTF8.GetBytes(codigo.Trim())));
             using var ligacao = Abrir();
             using var cmd = ligacao.CreateCommand();
-            cmd.CommandText = @"INSERT OR IGNORE INTO CodigoEmparelhamento
-                (Id, CodigoHash, Consumido, CriadoEm) VALUES (1, $hash, 0, $agora);";
+            // Mantém o código de utilização única entre reinícios do servidor.
+            // Se o administrador definir um código diferente na variável de ambiente,
+            // substitui o hash anterior e reativa o emparelhamento.
+            cmd.CommandText = @"INSERT INTO CodigoEmparelhamento
+                (Id, CodigoHash, Consumido, CriadoEm) VALUES (1, $hash, 0, $agora)
+                ON CONFLICT(Id) DO UPDATE SET
+                    CodigoHash = excluded.CodigoHash,
+                    Consumido = 0,
+                    CriadoEm = excluded.CriadoEm
+                WHERE CodigoEmparelhamento.CodigoHash <> excluded.CodigoHash;";
             cmd.Parameters.AddWithValue("$hash", hash);
             cmd.Parameters.AddWithValue("$agora", DateTime.UtcNow.ToString("O"));
             cmd.ExecuteNonQuery();
