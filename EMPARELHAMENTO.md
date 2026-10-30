@@ -16,6 +16,12 @@ dotnet run
 
 O código é lido quando o servidor arranca. Não o colocar em ficheiros versionados nem o enviar por canais não seguros. Entregar o código apenas ao administrador do posto que vai ser emparelhado.
 
+## Continuar a utilizar a chave de acesso antiga
+
+O método antigo continua disponível. Na aplicação, abrir **Administração > Servidor**, expandir **Configuração técnica do servidor** e introduzir no campo **Chave de acesso** o mesmo valor de `ChaveAcesso` definido no `appsettings.json` do servidor. Guardar as definições.
+
+Por segurança, a aplicação não volta a mostrar a chave depois de a guardar. O campo aparecer vazio quando se reabre o ecrã é intencional: o valor continua guardado localmente e é reutilizado nos pedidos. O texto de estado junto ao campo indica se existe uma chave guardada ou se ainda é necessário introduzi-la.
+
 ## Emparelhar a aplicação
 
 1. Abrir a aplicação UHD e iniciar sessão com um utilizador autorizado a administrar o servidor.
