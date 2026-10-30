@@ -11,6 +11,7 @@
     <!-- SQLite com cifra (SQLCipher) -->
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="9.0.0" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.0" />
   </ItemGroup>
 
 </Project>
