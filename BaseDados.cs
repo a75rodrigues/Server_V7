@@ -181,7 +181,7 @@ namespace UHD.Servidor
         /// Regista (ou renova a credencial de) um posto autenticado pelo Windows.
         /// A identidade Windows é obtida pelo servidor; o cliente só indica o nome do computador.
         /// </summary>
-        public (string Id, string Token) RegistarPostoWindows(string identidadeWindows, string nomeComputador)
+        public (string Id, string Token) RegistarPostoWindows(string identidadeWindows, string nomeComputador, string? credencialAtual = null)
         {
             identidadeWindows = (identidadeWindows ?? string.Empty).Trim();
             nomeComputador = (nomeComputador ?? string.Empty).Trim();
@@ -201,6 +201,38 @@ namespace UHD.Servidor
                 procurar.Parameters.AddWithValue("$identidade", identidadeWindows);
                 procurar.Parameters.AddWithValue("$nome", nomeComputador);
                 id = procurar.ExecuteScalar() as string;
+            }
+
+            // Se o Launcher já possui uma credencial válida deste mesmo posto, reutiliza-a.
+            // Evita invalidar a sessão da aplicação quando o Launcher é executado novamente.
+            if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(credencialAtual))
+            {
+                using var lerHash = ligacao.CreateCommand();
+                lerHash.Transaction = tx;
+                lerHash.CommandText = "SELECT TokenHash FROM Postos WHERE Id = $id AND Ativo = 1;";
+                lerHash.Parameters.AddWithValue("$id", id);
+                string? hashGuardado = lerHash.ExecuteScalar() as string;
+                string hashRecebido = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(credencialAtual.Trim())));
+
+                if (!string.IsNullOrWhiteSpace(hashGuardado) &&
+                    System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                        System.Text.Encoding.UTF8.GetBytes(hashGuardado),
+                        System.Text.Encoding.UTF8.GetBytes(hashRecebido)))
+                {
+                    using var atualizarAcesso = ligacao.CreateCommand();
+                    atualizarAcesso.Transaction = tx;
+                    atualizarAcesso.CommandText = @"UPDATE Postos
+                        SET Nome = $nome, UltimoAcesso = $agora
+                        WHERE Id = $id;";
+                    atualizarAcesso.Parameters.AddWithValue("$nome", nomeComputador);
+                    atualizarAcesso.Parameters.AddWithValue("$agora", DateTime.UtcNow.ToString("O"));
+                    atualizarAcesso.Parameters.AddWithValue("$id", id);
+                    atualizarAcesso.ExecuteNonQuery();
+
+                    tx.Commit();
+                    return (id, credencialAtual.Trim());
+                }
             }
 
             string token = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
