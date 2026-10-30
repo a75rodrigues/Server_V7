@@ -7,7 +7,11 @@ O servidor aceita um código de emparelhamento de utilização única através d
 Abrir PowerShell na máquina do servidor e executar:
 
 ```powershell
-$codigo = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$bytes = New-Object byte[] 24
+$rng.GetBytes($bytes)
+$rng.Dispose()
+$codigo = [Convert]::ToBase64String($bytes)
 $env:UHD_PAIRING_CODE = $codigo
 Write-Host "Código de emparelhamento (entregar ao administrador do posto):"
 Write-Host $codigo
