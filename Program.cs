@@ -292,4 +292,6 @@ app.Run();
 public sealed record PedidoLogin(string? NumeroFuncionario, string? Password);
 
 
-public sealed record PedidoEmparelhamento(string? Codigo, string? Nome);\n\npublic sealed record PedidoRegistoAutomatico(string? NomeComputador);
+public sealed record PedidoEmparelhamento(string? Codigo, string? Nome);
+
+public sealed record PedidoRegistoAutomatico(string? NomeComputador);
