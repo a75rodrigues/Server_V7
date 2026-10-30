@@ -1,0 +1,36 @@
+name: Compilar servidor UHD
+
+on:
+  push:
+    branches:
+      - 'alteraçoes-gpt'
+    paths:
+      - '**/*.cs'
+      - '**/*.csproj'
+      - '.github/workflows/compilar-servidor.yml'
+  pull_request:
+    branches:
+      - 'alteraçoes-gpt'
+    paths:
+      - '**/*.cs'
+      - '**/*.csproj'
+      - '.github/workflows/compilar-servidor.yml'
+  workflow_dispatch:
+
+jobs:
+  compilar:
+    runs-on: windows-latest
+    steps:
+      - name: Obter código
+        uses: actions/checkout@v4
+
+      - name: Instalar .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restaurar servidor
+        run: dotnet restore UHD.Servidor.csproj
+
+      - name: Compilar servidor
+        run: dotnet build UHD.Servidor.csproj --configuration Release --no-restore
