@@ -37,6 +37,8 @@ string chaveEsperada = app.Configuration["ChaveAcesso"] ?? string.Empty;
 string caminhoBD = ResolverCaminho(app.Configuration["CaminhoBD"] ?? Path.Combine("Dados", "uhd-servidor.db"));
 var bd = new BaseDados(caminhoBD, app.Configuration["ChaveBD"]);
 var servico = new ServicoSincronizacao(bd);
+string codigoEmparelhamento = Environment.GetEnvironmentVariable("UHD_PAIRING_CODE") ?? string.Empty;
+bd.PrepararCodigoEmparelhamento(codigoEmparelhamento);
 
 Console.WriteLine("==============================================");
 Console.WriteLine(" SERVIDOR CENTRAL UHD");
@@ -62,20 +64,29 @@ app.Use(async (contexto, seguinte) =>
 // Todos os pedidos a /api exigem a chave de acesso no cabeçalho "X-Chave-Acesso"
 app.Use(async (contexto, seguinte) =>
 {
-    if (contexto.Request.Path.StartsWithSegments("/api"))
+    if (contexto.Request.Path.StartsWithSegments("/api") &&
+        !contexto.Request.Path.StartsWithSegments("/api/postos/parear"))
     {
-        string recebida = contexto.Request.Headers["X-Chave-Acesso"].ToString();
+        string tokenPosto = contexto.Request.Headers["X-UHD-Posto"].ToString();
+        string chaveRecebida = contexto.Request.Headers["X-Chave-Acesso"].ToString();
 
-        bool valida =
+        bool postoValido = false;
+        if (!string.IsNullOrWhiteSpace(tokenPosto))
+        {
+            try { postoValido = bd.ValidarCredencialPosto(tokenPosto); }
+            catch (Exception ex) { Console.WriteLine("Erro ao validar posto: " + ex.Message); }
+        }
+
+        bool chaveLegadaValida =
             !string.IsNullOrEmpty(chaveEsperada) &&
             CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(recebida),
+                Encoding.UTF8.GetBytes(chaveRecebida),
                 Encoding.UTF8.GetBytes(chaveEsperada));
 
-        if (!valida)
+        if (!postoValido && !chaveLegadaValida)
         {
             contexto.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            await contexto.Response.WriteAsync("Chave de acesso inválida.");
+            await contexto.Response.WriteAsync("Credencial do posto inválida ou não autorizada.");
             return;
         }
     }
@@ -112,6 +123,19 @@ app.MapGet("/releases/{ficheiro}", IResult (string ficheiro) =>
 });
 
 app.MapGet("/", () => "Servidor UHD ativo.");
+
+// Emparelhamento inicial: código de uso único configurado no ambiente do servidor.
+app.MapPost("/api/postos/parear", (PedidoEmparelhamento pedido) =>
+{
+    if (string.IsNullOrWhiteSpace(codigoEmparelhamento))
+        return Results.Problem("O emparelhamento não está configurado no servidor.", statusCode: 503);
+
+    var criado = bd.EmparelharPosto(pedido.Codigo ?? string.Empty, pedido.Nome ?? string.Empty);
+    if (criado == null) return Results.Unauthorized();
+
+    // O token é devolvido uma única vez. A BD guarda apenas o respetivo hash.
+    return Results.Ok(new { postoId = criado.Value.Id, credencial = criado.Value.Token });
+});
 
 app.MapGet("/api/ping", () => Results.Ok(new
 {
@@ -242,3 +266,5 @@ app.Run();
 
 public sealed record PedidoLogin(string? NumeroFuncionario, string? Password);
 
+
+public sealed record PedidoEmparelhamento(string? Codigo, string? Nome);
