@@ -145,7 +145,7 @@ app.MapPost("/api/postos/registar-automatico", (PedidoRegistoAutomatico pedido, 
     if (nomeComputador.Length == 0 || nomeComputador.Length > 100)
         return Results.BadRequest("Nome do computador inválido.");
 
-    var criado = bd.RegistarPostoWindows(identidade, nomeComputador);
+    var criado = bd.RegistarPostoWindows(identidade, nomeComputador, pedido.CredencialAtual);
     return Results.Ok(new { postoId = criado.Id, credencial = criado.Token, identidadeWindows = identidade });
 }).RequireAuthorization();
 
@@ -294,4 +294,4 @@ public sealed record PedidoLogin(string? NumeroFuncionario, string? Password);
 
 public sealed record PedidoEmparelhamento(string? Codigo, string? Nome);
 
-public sealed record PedidoRegistoAutomatico(string? NomeComputador);
+public sealed record PedidoRegistoAutomatico(string? NomeComputador, string? CredencialAtual);
