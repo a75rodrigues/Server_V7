@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Microsoft.AspNetCore.Authentication.Negotiate;
 using System.Net.Sockets;
 using System.Text;
 using UHD.Servidor;
@@ -19,6 +20,11 @@ SQLitePCL.Batteries_V2.Init();
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Autenticação integrada Windows (Kerberos/NTLM) para o registo automático dos postos.
+builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
+    .AddNegotiate();
+builder.Services.AddAuthorization();
+
 // Em desenvolvimento usa a pasta do projeto; publicado, usa a pasta do executável.
 string raizServidor = File.Exists(Path.Combine(builder.Environment.ContentRootPath, "UHD.Servidor.csproj"))
     ? builder.Environment.ContentRootPath
@@ -32,6 +38,9 @@ string urls = builder.Configuration["urls"] ?? "http://0.0.0.0:5080";
 builder.WebHost.UseUrls(urls);
 
 var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 string chaveEsperada = app.Configuration["ChaveAcesso"] ?? string.Empty;
 string caminhoBD = ResolverCaminho(app.Configuration["CaminhoBD"] ?? Path.Combine("Dados", "uhd-servidor.db"));
@@ -65,7 +74,8 @@ app.Use(async (contexto, seguinte) =>
 app.Use(async (contexto, seguinte) =>
 {
     if (contexto.Request.Path.StartsWithSegments("/api") &&
-        !contexto.Request.Path.StartsWithSegments("/api/postos/parear"))
+        !contexto.Request.Path.StartsWithSegments("/api/postos/parear") &&
+        !contexto.Request.Path.StartsWithSegments("/api/postos/registar-automatico"))
     {
         string tokenPosto = contexto.Request.Headers["X-UHD-Posto"].ToString();
         string chaveRecebida = contexto.Request.Headers["X-Chave-Acesso"].ToString();
@@ -124,7 +134,22 @@ app.MapGet("/releases/{ficheiro}", IResult (string ficheiro) =>
 
 app.MapGet("/", () => "Servidor UHD ativo.");
 
-// Emparelhamento inicial: código de uso único configurado no ambiente do servidor.
+// Registo automático do posto com a identidade Windows autenticada.
+app.MapPost("/api/postos/registar-automatico", (PedidoRegistoAutomatico pedido, HttpContext contexto) =>
+{
+    string identidade = contexto.User.Identity?.Name ?? string.Empty;
+    if (string.IsNullOrWhiteSpace(identidade))
+        return Results.Unauthorized();
+
+    string nomeComputador = (pedido.NomeComputador ?? string.Empty).Trim();
+    if (nomeComputador.Length == 0 || nomeComputador.Length > 100)
+        return Results.BadRequest("Nome do computador inválido.");
+
+    var criado = bd.RegistarPostoWindows(identidade, nomeComputador);
+    return Results.Ok(new { postoId = criado.Id, credencial = criado.Token, identidadeWindows = identidade });
+}).RequireAuthorization();
+
+// Emparelhamento inicial legado: mantido temporariamente para compatibilidade.
 app.MapPost("/api/postos/parear", (PedidoEmparelhamento pedido) =>
 {
     if (string.IsNullOrWhiteSpace(codigoEmparelhamento))
@@ -267,4 +292,4 @@ app.Run();
 public sealed record PedidoLogin(string? NumeroFuncionario, string? Password);
 
 
-public sealed record PedidoEmparelhamento(string? Codigo, string? Nome);
+public sealed record PedidoEmparelhamento(string? Codigo, string? Nome);\n\npublic sealed record PedidoRegistoAutomatico(string? NomeComputador);
