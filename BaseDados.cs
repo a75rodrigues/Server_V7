@@ -88,7 +88,90 @@ namespace UHD.Servidor
                     PRIMARY KEY (Tabela, De)
                 );";
 
+            cmd.CommandText += @"
+                CREATE TABLE IF NOT EXISTS Postos (
+                    Id TEXT PRIMARY KEY,
+                    Nome TEXT NOT NULL,
+                    TokenHash TEXT NOT NULL UNIQUE,
+                    Ativo INTEGER NOT NULL DEFAULT 1,
+                    CriadoEm TEXT NOT NULL,
+                    UltimoAcesso TEXT
+                );
+                CREATE TABLE IF NOT EXISTS CodigoEmparelhamento (
+                    Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                    CodigoHash TEXT NOT NULL,
+                    Consumido INTEGER NOT NULL DEFAULT 0,
+                    CriadoEm TEXT NOT NULL
+                );";
             cmd.ExecuteNonQuery();
+        }
+
+        public void PrepararCodigoEmparelhamento(string codigo)
+        {
+            if (string.IsNullOrWhiteSpace(codigo)) return;
+            string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(codigo.Trim())));
+            using var ligacao = Abrir();
+            using var cmd = ligacao.CreateCommand();
+            cmd.CommandText = @"INSERT OR IGNORE INTO CodigoEmparelhamento
+                (Id, CodigoHash, Consumido, CriadoEm) VALUES (1, $hash, 0, $agora);";
+            cmd.Parameters.AddWithValue("$hash", hash);
+            cmd.Parameters.AddWithValue("$agora", DateTime.UtcNow.ToString("O"));
+            cmd.ExecuteNonQuery();
+        }
+
+        public (string Id, string Token)? EmparelharPosto(string codigo, string nome)
+        {
+            if (string.IsNullOrWhiteSpace(codigo) || string.IsNullOrWhiteSpace(nome)) return null;
+            using var ligacao = Abrir();
+            using var tx = ligacao.BeginTransaction();
+            using var ler = ligacao.CreateCommand();
+            ler.Transaction = tx;
+            ler.CommandText = "SELECT CodigoHash, Consumido FROM CodigoEmparelhamento WHERE Id = 1;";
+            using var reader = ler.ExecuteReader();
+            if (!reader.Read() || reader.GetInt32(1) != 0) return null;
+            string esperado = reader.GetString(0);
+            reader.Close();
+
+            string recebido = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(codigo.Trim())));
+            if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                Convert.FromHexString(esperado), Convert.FromHexString(recebido))) return null;
+
+            using var consumir = ligacao.CreateCommand();
+            consumir.Transaction = tx;
+            consumir.CommandText = "UPDATE CodigoEmparelhamento SET Consumido = 1 WHERE Id = 1 AND Consumido = 0;";
+            if (consumir.ExecuteNonQuery() != 1) return null;
+
+            string id = Guid.NewGuid().ToString("D");
+            string token = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+            string tokenHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(token)));
+            using var inserir = ligacao.CreateCommand();
+            inserir.Transaction = tx;
+            inserir.CommandText = @"INSERT INTO Postos (Id, Nome, TokenHash, Ativo, CriadoEm)
+                VALUES ($id, $nome, $hash, 1, $agora);";
+            inserir.Parameters.AddWithValue("$id", id);
+            inserir.Parameters.AddWithValue("$nome", nome.Trim());
+            inserir.Parameters.AddWithValue("$hash", tokenHash);
+            inserir.Parameters.AddWithValue("$agora", DateTime.UtcNow.ToString("O"));
+            inserir.ExecuteNonQuery();
+            tx.Commit();
+            return (id, token);
+        }
+
+        public bool ValidarCredencialPosto(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return false;
+            string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(token.Trim())));
+            using var ligacao = Abrir();
+            using var cmd = ligacao.CreateCommand();
+            cmd.CommandText = @"UPDATE Postos SET UltimoAcesso = $agora
+                WHERE TokenHash = $hash AND Ativo = 1;";
+            cmd.Parameters.AddWithValue("$agora", DateTime.UtcNow.ToString("O"));
+            cmd.Parameters.AddWithValue("$hash", hash);
+            return cmd.ExecuteNonQuery() == 1;
         }
     }
 }
