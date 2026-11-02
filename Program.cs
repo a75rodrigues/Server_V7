@@ -417,6 +417,30 @@ app.MapGet("/api/consulta/avaliacoes/{id:guid}", (Guid id) =>
     return Results.Ok(new { avaliacao, doente, utilizadores, versoes });
 });
 
+
+// Procura um doente pelo número de processo diretamente na BD central.
+app.MapPost("/api/consulta/doentes/por-processo", (PedidoConsultaDoente pedido) =>
+{
+    string processo = (pedido.NumeroProcesso ?? string.Empty).Trim();
+    if (processo.Length == 0)
+        return Results.BadRequest(new { mensagem = "Indique o número de processo." });
+
+    using var ligacao = bd.Abrir();
+    using var cmd = ligacao.CreateCommand();
+    cmd.CommandText = @"
+        SELECT Dados FROM Entidades
+        WHERE Tabela = 'Doentes'
+          AND LOWER(TRIM(COALESCE(json_extract(Dados, '$.NumeroProcesso'), ''))) = LOWER($processo)
+        LIMIT 1;";
+    cmd.Parameters.AddWithValue("$processo", processo);
+
+    string? json = cmd.ExecuteScalar() as string;
+    if (string.IsNullOrWhiteSpace(json))
+        return Results.NotFound(new { mensagem = "Não existe doente com este número de processo na BD central." });
+
+    return Results.Ok(System.Text.Json.Nodes.JsonNode.Parse(json));
+});
+
 static bool VerificarPasswordCentral(string password, string hashGuardado)
 {
     try
@@ -492,6 +516,7 @@ app.Run();
 
 public sealed record PedidoConsultaUtilizador(string? NumeroFuncionario);
 public sealed record PedidoConsultaAvaliacoes(string? Processo, string? Nome, DateTime? Data);
+public sealed record PedidoConsultaDoente(string? NumeroProcesso);
 
 public sealed record PedidoLogin(string? NumeroFuncionario, string? Password);
 
