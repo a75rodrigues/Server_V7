@@ -258,6 +258,90 @@ app.MapPost("/api/utilizadores/consultar", (PedidoConsultaUtilizador pedido) =>
     });
 });
 
+
+// Consulta de avaliações em tempo real na BD central.
+// A autenticação do posto é aplicada pelo middleware /api antes de chegar a esta rota.
+app.MapPost("/api/consulta/avaliacoes", (PedidoConsultaAvaliacoes pedido) =>
+{
+    string processo = (pedido.Processo ?? string.Empty).Trim();
+    string nome = (pedido.Nome ?? string.Empty).Trim();
+    string? data = pedido.Data?.ToString("yyyy-MM-dd");
+
+    using var ligacao = bd.Abrir();
+    using var cmd = ligacao.CreateCommand();
+    cmd.CommandText = @"
+        SELECT
+            json_extract(a.Dados, '$.IdAvaliacao') AS IdAvaliacao,
+            json_extract(a.Dados, '$.DataAvaliacao') AS DataAvaliacao,
+            COALESCE(json_extract(a.Dados, '$.NumeroProcesso'), '') AS NumeroProcesso,
+            COALESCE(json_extract(d.Dados, '$.Nome'), '') AS NomeDoente,
+            COALESCE(json_extract(a.Dados, '$.NumeroEpisodio'), '') AS NumeroEpisodio,
+            COALESCE(json_extract(a.Dados, '$.Servico'), '') AS Servico,
+            COALESCE(json_extract(a.Dados, '$.Cama'), '') AS Cama,
+            COALESCE(json_extract(a.Dados, '$.Idade'), 0) AS Idade,
+            COALESCE(json_extract(a.Dados, '$.Diagnostico'), '') AS Diagnostico,
+            COALESCE(json_extract(u.Dados, '$.Nome'), json_extract(a.Dados, '$.ProfissionalAvaliacao'), '') AS ProfissionalAvaliacao,
+            COALESCE(json_extract(a.Dados, '$.Estado'), '') AS Estado,
+            COALESCE(json_extract(a.Dados, '$.Atual'), 1) AS Atual,
+            COALESCE(json_extract(a.Dados, '$.NumeroRegisto'), '') AS NumeroRegisto
+        FROM Entidades a
+        LEFT JOIN Entidades d
+            ON d.Tabela = 'Doentes'
+           AND json_extract(d.Dados, '$.Uid') = json_extract(a.Dados, '$.DoenteUid')
+        LEFT JOIN Entidades u
+            ON u.Tabela = 'Utilizadores'
+           AND LOWER(json_extract(u.Dados, '$.NumeroFuncionario')) =
+               LOWER(json_extract(a.Dados, '$.ProfissionalNumero'))
+        WHERE a.Tabela = 'Avaliacoes'
+          AND ($processo = '' OR COALESCE(json_extract(a.Dados, '$.NumeroProcesso'), '') LIKE $processoLike)
+          AND ($nome = '' OR COALESCE(json_extract(d.Dados, '$.Nome'), '') LIKE $nomeLike)
+          AND ($data IS NULL OR DATE(json_extract(a.Dados, '$.DataAvaliacao')) = DATE($data))
+        ORDER BY json_extract(a.Dados, '$.NumeroRegisto') DESC,
+                 json_extract(a.Dados, '$.DataHoraCriacao') DESC
+        LIMIT 10000;";
+    cmd.Parameters.AddWithValue("$processo", processo);
+    cmd.Parameters.AddWithValue("$processoLike", "%" + processo + "%");
+    cmd.Parameters.AddWithValue("$nome", nome);
+    cmd.Parameters.AddWithValue("$nomeLike", "%" + nome + "%");
+    cmd.Parameters.AddWithValue("$data", (object?)data ?? DBNull.Value);
+
+    var resultados = new List<object>();
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+        string texto(int indice) => reader.IsDBNull(indice)
+            ? string.Empty
+            : Convert.ToString(reader.GetValue(indice), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+
+        DateTime.TryParse(texto(1), System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeLocal, out DateTime dataAvaliacao);
+
+        decimal.TryParse(texto(7), System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out decimal idade);
+
+        Guid.TryParse(texto(0), out Guid idAvaliacao);
+
+        resultados.Add(new
+        {
+            idAvaliacao,
+            dataAvaliacao,
+            numeroProcesso = texto(2),
+            nomeDoente = texto(3),
+            numeroEpisodio = texto(4),
+            servico = texto(5),
+            cama = texto(6),
+            idade,
+            diagnostico = texto(8),
+            profissionalAvaliacao = texto(9),
+            estado = texto(10),
+            atual = !reader.IsDBNull(11) && Convert.ToInt32(reader.GetValue(11)) != 0,
+            numeroRegisto = texto(12)
+        });
+    }
+
+    return Results.Ok(resultados);
+});
+
 static bool VerificarPasswordCentral(string password, string hashGuardado)
 {
     try
@@ -332,6 +416,7 @@ _ = Task.Run(async () =>
 app.Run();
 
 public sealed record PedidoConsultaUtilizador(string? NumeroFuncionario);
+public sealed record PedidoConsultaAvaliacoes(string? Processo, string? Nome, DateTime? Data);
 
 public sealed record PedidoLogin(string? NumeroFuncionario, string? Password);
 
