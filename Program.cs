@@ -216,6 +216,48 @@ app.MapPost("/api/login", (PedidoLogin pedido) =>
     });
 });
 
+
+// Consulta do nome/estado do funcionário no servidor, protegida pela credencial do posto.
+// Não devolve hashes nem outros dados de autenticação.
+app.MapPost("/api/utilizadores/consultar", (PedidoConsultaUtilizador pedido) =>
+{
+    string numero = (pedido.NumeroFuncionario ?? string.Empty).Trim();
+    if (numero.Length == 0)
+        return Results.BadRequest(new { mensagem = "Indique o número de funcionário." });
+
+    using var ligacao = bd.Abrir();
+    using var cmd = ligacao.CreateCommand();
+    cmd.CommandText = @"SELECT Dados FROM Entidades
+                        WHERE Tabela = 'Utilizadores' AND LOWER(Chave) = LOWER($numero)
+                        LIMIT 1;";
+    cmd.Parameters.AddWithValue("$numero", numero);
+    string? json = cmd.ExecuteScalar() as string;
+    if (string.IsNullOrWhiteSpace(json))
+        return Results.NotFound(new { mensagem = "O número de funcionário não existe na base de dados central." });
+
+    using var documento = System.Text.Json.JsonDocument.Parse(json);
+    var raiz = documento.RootElement;
+    string Campo(string nome) =>
+        raiz.TryGetProperty(nome, out var valor) && valor.ValueKind == System.Text.Json.JsonValueKind.String
+            ? valor.GetString() ?? string.Empty : string.Empty;
+    bool Bool(string nome, bool padrao = false)
+    {
+        if (!raiz.TryGetProperty(nome, out var valor)) return padrao;
+        if (valor.ValueKind == System.Text.Json.JsonValueKind.True) return true;
+        if (valor.ValueKind == System.Text.Json.JsonValueKind.False) return false;
+        if (valor.ValueKind == System.Text.Json.JsonValueKind.Number && valor.TryGetInt32(out int n)) return n != 0;
+        return padrao;
+    }
+
+    return Results.Ok(new
+    {
+        numeroFuncionario = Campo("NumeroFuncionario"),
+        nome = Campo("Nome"),
+        ativo = Bool("Ativo", true),
+        bloqueado = Bool("Bloqueado")
+    });
+});
+
 static bool VerificarPasswordCentral(string password, string hashGuardado)
 {
     try
@@ -288,6 +330,8 @@ _ = Task.Run(async () =>
     }
 });
 app.Run();
+
+public sealed record PedidoConsultaUtilizador(string? NumeroFuncionario);
 
 public sealed record PedidoLogin(string? NumeroFuncionario, string? Password);
 
