@@ -342,6 +342,81 @@ app.MapPost("/api/consulta/avaliacoes", (PedidoConsultaAvaliacoes pedido) =>
     return Results.Ok(resultados);
 });
 
+
+// Devolve o documento central completo de uma avaliação e as entidades relacionadas.
+// A aplicação usa-o para preencher a cache local apenas quando o profissional abre o registo.
+app.MapGet("/api/consulta/avaliacoes/{id:guid}", (Guid id) =>
+{
+    using var ligacao = bd.Abrir();
+
+    string? LerEntidade(string tabela, string campo, string valor)
+    {
+        using var cmd = ligacao.CreateCommand();
+        cmd.CommandText = $"SELECT Dados FROM Entidades WHERE Tabela = $tabela AND json_extract(Dados, '$.{campo}') = $valor LIMIT 1;";
+        cmd.Parameters.AddWithValue("$tabela", tabela);
+        cmd.Parameters.AddWithValue("$valor", valor);
+        return cmd.ExecuteScalar() as string;
+    }
+
+    using var cmdAvaliacao = ligacao.CreateCommand();
+    cmdAvaliacao.CommandText = "SELECT Dados FROM Entidades WHERE Tabela = 'Avaliacoes' AND Chave = $id LIMIT 1;";
+    cmdAvaliacao.Parameters.AddWithValue("$id", id.ToString());
+    string? jsonAvaliacao = cmdAvaliacao.ExecuteScalar() as string;
+    if (string.IsNullOrWhiteSpace(jsonAvaliacao))
+        return Results.NotFound(new { mensagem = "A avaliação não existe na base de dados central." });
+
+    var avaliacao = System.Text.Json.Nodes.JsonNode.Parse(jsonAvaliacao);
+    string Campo(System.Text.Json.Nodes.JsonNode? no, string nome)
+        => no is System.Text.Json.Nodes.JsonObject obj && obj[nome] != null
+            ? obj[nome]!.ToString()
+            : string.Empty;
+
+    string doenteUid = Campo(avaliacao, "DoenteUid");
+    System.Text.Json.Nodes.JsonNode? doente = null;
+    if (!string.IsNullOrWhiteSpace(doenteUid))
+    {
+        string? jsonDoente = LerEntidade("Doentes", "Uid", doenteUid);
+        if (!string.IsNullOrWhiteSpace(jsonDoente))
+            doente = System.Text.Json.Nodes.JsonNode.Parse(jsonDoente);
+    }
+
+    var versoes = new System.Text.Json.Nodes.JsonArray();
+    var numerosUtilizadores = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    string numeroCriador = Campo(avaliacao, "RegistadoPorNumero");
+    string numeroProfissional = Campo(avaliacao, "ProfissionalNumero");
+    if (!string.IsNullOrWhiteSpace(numeroCriador)) numerosUtilizadores.Add(numeroCriador);
+    if (!string.IsNullOrWhiteSpace(numeroProfissional)) numerosUtilizadores.Add(numeroProfissional);
+
+    using (var cmdVersoes = ligacao.CreateCommand())
+    {
+        cmdVersoes.CommandText = @"
+            SELECT Dados FROM Entidades
+            WHERE Tabela = 'VersoesAvaliacao'
+              AND json_extract(Dados, '$.IdAvaliacao') = $id
+            ORDER BY json_extract(Dados, '$.NumeroVersao');";
+        cmdVersoes.Parameters.AddWithValue("$id", id.ToString());
+        using var reader = cmdVersoes.ExecuteReader();
+        while (reader.Read())
+        {
+            string json = reader.GetString(0);
+            var versao = System.Text.Json.Nodes.JsonNode.Parse(json);
+            string numero = Campo(versao, "UtilizadorNumero");
+            if (!string.IsNullOrWhiteSpace(numero)) numerosUtilizadores.Add(numero);
+            versoes.Add(versao);
+        }
+    }
+
+    var utilizadores = new System.Text.Json.Nodes.JsonArray();
+    foreach (string numero in numerosUtilizadores)
+    {
+        string? jsonUtilizador = LerEntidade("Utilizadores", "NumeroFuncionario", numero);
+        if (!string.IsNullOrWhiteSpace(jsonUtilizador))
+            utilizadores.Add(System.Text.Json.Nodes.JsonNode.Parse(jsonUtilizador));
+    }
+
+    return Results.Ok(new { avaliacao, doente, utilizadores, versoes });
+});
+
 static bool VerificarPasswordCentral(string password, string hashGuardado)
 {
     try
