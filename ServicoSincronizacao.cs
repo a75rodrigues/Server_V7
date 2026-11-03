@@ -268,20 +268,20 @@ namespace UHD.Servidor
         private static void ValidarAnulacao(SqliteConnection lig, SqliteTransaction tx,
                                                string chaveAvaliacao, JsonObject dadosRecebidos)
         {
-            if (!Booleano(dadosRecebidos, "Anulado"))
-                return;
-
             JsonObject? anterior = LerDados(lig, tx, "Avaliacoes", chaveAvaliacao);
             if (anterior != null && Booleano(anterior, "Anulado"))
             {
-                // Uma anulação aceite é irreversível: um posto com dados antigos
-                // não pode repor o registo como ativo nem alterar a auditoria.
+                // Uma anulação aceite é irreversível: nem uma versão antiga do cliente
+                // que ainda não conheça estes campos pode repor o registo como ativo.
                 dadosRecebidos["Anulado"] = true;
                 dadosRecebidos["MotivoAnulacao"] = Texto(anterior, "MotivoAnulacao");
                 dadosRecebidos["AnuladoPorNumero"] = Texto(anterior, "AnuladoPorNumero");
                 dadosRecebidos["DataHoraAnulacao"] = Texto(anterior, "DataHoraAnulacao");
                 return;
             }
+
+            if (!Booleano(dadosRecebidos, "Anulado"))
+                return;
 
             if (!Booleano(dadosRecebidos, "Atual"))
                 throw new InvalidOperationException("Anulação recusada: só a versão atual pode ser anulada.");
