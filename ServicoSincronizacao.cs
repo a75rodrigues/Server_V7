@@ -201,6 +201,10 @@ namespace UHD.Servidor
             if (string.IsNullOrWhiteSpace(chave))
                 return;
 
+            // Uma anulação é uma operação auditada: o servidor valida o autor,
+            // não confiando apenas na validação feita pelo cliente.
+            ValidarAnulacao(lig, tx, chave, d);
+
             bool modificado = false;
 
             // 1) Doente repetido: aponta para o doente que ficou
@@ -259,6 +263,58 @@ namespace UHD.Servidor
 
             // Se o servidor mudou alguma coisa, o posto de origem também tem de a receber
             Guardar(lig, tx, "Avaliacoes", chave, d, modificado ? OrigemServidor : posto);
+        }
+
+        private static void ValidarAnulacao(SqliteConnection lig, SqliteTransaction tx,
+                                               string chaveAvaliacao, JsonObject dadosRecebidos)
+        {
+            if (!Booleano(dadosRecebidos, "Anulado"))
+                return;
+
+            JsonObject? anterior = LerDados(lig, tx, "Avaliacoes", chaveAvaliacao);
+            if (anterior != null && Booleano(anterior, "Anulado"))
+                return; // sincronização repetida de uma anulação já aceite
+
+            string autor = Texto(dadosRecebidos, "AnuladoPorNumero")?.Trim() ?? string.Empty;
+            string criador = anterior == null
+                ? (Texto(dadosRecebidos, "RegistadoPorNumero")?.Trim() ?? string.Empty)
+                : (Texto(anterior, "RegistadoPorNumero")?.Trim() ?? string.Empty);
+            string motivo = Texto(dadosRecebidos, "MotivoAnulacao")?.Trim() ?? string.Empty;
+
+            if (autor.Length == 0 || motivo.Length < 5 || motivo.Length > 1000)
+                throw new InvalidOperationException("Anulação recusada: falta o autor ou o motivo válido.");
+
+            JsonObject? utilizador = null;
+            using (var cmd = lig.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"
+                    SELECT Dados FROM Entidades
+                    WHERE Tabela = 'Utilizadores'
+                      AND LOWER(json_extract(Dados, '$.NumeroFuncionario')) = LOWER($numero)
+                    LIMIT 1;";
+                cmd.Parameters.AddWithValue("$numero", autor);
+                string? json = cmd.ExecuteScalar() as string;
+                if (!string.IsNullOrWhiteSpace(json))
+                    utilizador = JsonNode.Parse(json) as JsonObject;
+            }
+
+            if (utilizador == null)
+                throw new InvalidOperationException("Anulação recusada: o utilizador não existe no servidor.");
+
+            bool ativo = !utilizador.ContainsKey("Ativo") || Booleano(utilizador, "Ativo");
+            bool bloqueado = Booleano(utilizador, "Bloqueado");
+            string perfil = Texto(utilizador, "Perfil") ?? string.Empty;
+            bool administrador = perfil.StartsWith("Admin", StringComparison.OrdinalIgnoreCase);
+
+            if (!ativo || bloqueado)
+                throw new InvalidOperationException("Anulação recusada: o utilizador está inativo ou bloqueado.");
+
+            if (!administrador && !string.Equals(autor, criador, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Anulação recusada: só o criador ou um administrador podem anular esta avaliação.");
+
+            if (anterior != null && !Booleano(anterior, "Atual"))
+                throw new InvalidOperationException("Anulação recusada: não é permitido anular uma versão desatualizada.");
         }
 
         private string ObterOuAtribuirDefinitivo(SqliteConnection lig, SqliteTransaction tx, string provisorio, int ano)
