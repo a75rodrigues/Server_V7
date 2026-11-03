@@ -59,6 +59,11 @@ namespace UHD.Servidor
                 );
                 CREATE INDEX IF NOT EXISTS ix_entidades_seq ON Entidades(Seq);
 
+                -- Acelera a consulta central por número de processo sem percorrer todos os JSON.
+                CREATE INDEX IF NOT EXISTS ix_entidades_doente_processo
+                    ON Entidades(LOWER(TRIM(COALESCE(json_extract(Dados, '$.NumeroProcesso'), ''))))
+                    WHERE Tabela = 'Doentes';
+
                 CREATE TABLE IF NOT EXISTS Sequencia (
                     Id INTEGER PRIMARY KEY CHECK (Id = 1),
                     Ultimo INTEGER NOT NULL
