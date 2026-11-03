@@ -283,7 +283,11 @@ app.MapPost("/api/consulta/avaliacoes", (PedidoConsultaAvaliacoes pedido) =>
             COALESCE(json_extract(u.Dados, '$.Nome'), json_extract(a.Dados, '$.ProfissionalAvaliacao'), '') AS ProfissionalAvaliacao,
             COALESCE(json_extract(a.Dados, '$.Estado'), '') AS Estado,
             COALESCE(json_extract(a.Dados, '$.Atual'), 1) AS Atual,
-            COALESCE(json_extract(a.Dados, '$.NumeroRegisto'), '') AS NumeroRegisto
+            COALESCE(json_extract(a.Dados, '$.NumeroRegisto'), '') AS NumeroRegisto,
+            COALESCE(json_extract(a.Dados, '$.Anulado'), 0) AS Anulado,
+            COALESCE(json_extract(a.Dados, '$.MotivoAnulacao'), '') AS MotivoAnulacao,
+            COALESCE(json_extract(a.Dados, '$.AnuladoPorNumero'), '') AS AnuladoPorNumero,
+            COALESCE(json_extract(a.Dados, '$.DataHoraAnulacao'), '') AS DataHoraAnulacao
         FROM Entidades a
         LEFT JOIN Entidades d
             ON d.Tabela = 'Doentes'
@@ -335,7 +339,12 @@ app.MapPost("/api/consulta/avaliacoes", (PedidoConsultaAvaliacoes pedido) =>
             profissionalAvaliacao = texto(9),
             estado = texto(10),
             atual = !reader.IsDBNull(11) && Convert.ToInt32(reader.GetValue(11)) != 0,
-            numeroRegisto = texto(12)
+            numeroRegisto = texto(12),
+            anulado = !reader.IsDBNull(13) && Convert.ToInt32(reader.GetValue(13)) != 0,
+            motivoAnulacao = texto(14),
+            anuladoPorNumero = texto(15),
+            dataHoraAnulacao = DateTime.TryParse(texto(16), System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeLocal, out DateTime dataAnulacao) ? dataAnulacao : (DateTime?)null
         });
     }
 
