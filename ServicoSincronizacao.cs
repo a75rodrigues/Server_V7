@@ -273,7 +273,18 @@ namespace UHD.Servidor
 
             JsonObject? anterior = LerDados(lig, tx, "Avaliacoes", chaveAvaliacao);
             if (anterior != null && Booleano(anterior, "Anulado"))
-                return; // sincronização repetida de uma anulação já aceite
+            {
+                // Uma anulação aceite é irreversível: um posto com dados antigos
+                // não pode repor o registo como ativo nem alterar a auditoria.
+                dadosRecebidos["Anulado"] = true;
+                dadosRecebidos["MotivoAnulacao"] = Texto(anterior, "MotivoAnulacao");
+                dadosRecebidos["AnuladoPorNumero"] = Texto(anterior, "AnuladoPorNumero");
+                dadosRecebidos["DataHoraAnulacao"] = Texto(anterior, "DataHoraAnulacao");
+                return;
+            }
+
+            if (!Booleano(dadosRecebidos, "Atual"))
+                throw new InvalidOperationException("Anulação recusada: só a versão atual pode ser anulada.");
 
             string autor = Texto(dadosRecebidos, "AnuladoPorNumero")?.Trim() ?? string.Empty;
             string criador = anterior == null
