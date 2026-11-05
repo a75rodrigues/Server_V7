@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.SignalR;
 using System.Net.Sockets;
 using System.Text;
 using UHD.Servidor;
@@ -24,6 +25,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
     .AddNegotiate();
 builder.Services.AddAuthorization();
+builder.Services.AddSignalR();
 
 // Em desenvolvimento usa a pasta do projeto; publicado, usa a pasta do executável.
 string raizServidor = File.Exists(Path.Combine(builder.Environment.ContentRootPath, "UHD.Servidor.csproj"))
@@ -133,6 +135,9 @@ app.MapGet("/releases/{ficheiro}", IResult (string ficheiro) =>
 });
 
 app.MapGet("/", () => "Servidor UHD ativo.");
+
+// Canal de notificações em tempo real. A autenticação é validada pelo middleware /api.
+app.MapHub<HubAtualizacoes>("/api/hubs/atualizacoes");
 
 // Registo automático do posto com a identidade Windows autenticada.
 app.MapPost("/api/postos/registar-automatico", (PedidoRegistoAutomatico pedido, HttpContext contexto) =>
@@ -483,11 +488,18 @@ static bool VerificarPasswordCentral(string password, string hashGuardado)
 }
 
 // Sincronização: o posto envia o que tem de novo e recebe o que mudou nos outros
-app.MapPost("/api/sync", async (PedidoSincronizacao pedido) =>
+app.MapPost("/api/sync", async (PedidoSincronizacao pedido, IHubContext<HubAtualizacoes> hub) =>
 {
     try
     {
-        return Results.Ok(await servico.ProcessarAsync(pedido));
+        var resposta = await servico.ProcessarAsync(pedido);
+
+        // ProcessarAsync só devolve depois do COMMIT. A notificação nunca anuncia
+        // alterações que ainda não estejam gravadas na base de dados central.
+        if (pedido.Alteracoes.Count > 0)
+            await hub.Clients.All.SendAsync("AlteracoesDisponiveis", pedido.Posto);
+
+        return Results.Ok(resposta);
     }
     catch (Exception ex)
     {
