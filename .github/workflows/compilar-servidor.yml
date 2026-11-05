@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'alteraçoes-gpt'
+      - 'upgrade/signalr-tempo-real'
     paths:
       - '**/*.cs'
       - '**/*.csproj'
