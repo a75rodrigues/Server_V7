@@ -1,0 +1,141 @@
+name: Validar servidor UHD
+
+on:
+  push:
+    branches:
+      - alteraçoes-gpt
+      - upgrade/signalr-tempo-real
+    paths:
+      - '**/*.cs'
+      - '**/*.csproj'
+      - '**/*.slnx'
+      - '.github/workflows/validar-servidor.yml'
+  pull_request:
+    branches:
+      - alteraçoes-gpt
+    paths:
+      - '**/*.cs'
+      - '**/*.csproj'
+      - '**/*.slnx'
+      - '.github/workflows/validar-servidor.yml'
+  workflow_dispatch:
+  repository_dispatch:
+    types:
+      - uhd-app-release
+
+permissions:
+  contents: write
+
+jobs:
+  compilar:
+    runs-on: windows-latest
+    steps:
+      - name: Obter código
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'repository_dispatch' && 'upgrade/signalr-tempo-real' || github.ref }}
+
+      - name: Instalar .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restaurar dependências
+        run: dotnet restore UHD.Servidor.csproj
+
+      - name: Compilar servidor
+        run: dotnet build UHD.Servidor.csproj --configuration Release --no-restore
+
+      - name: Publicar servidor autónomo para Windows x64
+        run: dotnet publish UHD.Servidor.csproj --configuration Release --runtime win-x64 --self-contained true -p:UseAppHost=true --output artefactos/Servidor-UHD
+
+      - name: Obter a versão atual da aplicação UHD para distribuição
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.UHD_RELEASES_TOKEN }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "Falta configurar o segredo UHD_RELEASES_TOKEN no repositório Server_V7. Este token precisa de acesso de leitura ao repositório privado UHD-V4."
+          }
+
+          $cabecalhosApi = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+
+          $releases = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/a75rodrigues/UHD-V4/releases?per_page=30" -Headers $cabecalhosApi
+          $releaseApp = $releases |
+            Where-Object { $_.prerelease -eq $true -and $_.tag_name -like "uhd-test-*" } |
+            Sort-Object { [DateTime]$_.published_at } -Descending |
+            Select-Object -First 1
+
+          if ($null -eq $releaseApp) {
+            throw "Não foi encontrada nenhuma Release de teste uhd-test-* no repositório UHD-V4."
+          }
+
+          $assetManifesto = $releaseApp.assets | Where-Object { $_.name -eq "manifest.json" } | Select-Object -First 1
+          $assetPacote = $releaseApp.assets | Where-Object { $_.name -like "UHD-*.zip" -and $_.name -notlike "Launcher-UHD-*" } | Select-Object -First 1
+          if ($null -eq $assetManifesto -or $null -eq $assetPacote) {
+            throw "A Release $($releaseApp.tag_name) não contém manifest.json e ZIP da aplicação."
+          }
+
+          $pastaDistribuicao = "artefactos/Servidor-UHD/Distribuicao"
+          New-Item -ItemType Directory -Force -Path $pastaDistribuicao | Out-Null
+
+          $uriManifesto = "https://api.github.com/repos/a75rodrigues/UHD-V4/releases/assets/$($assetManifesto.id)"
+          Invoke-WebRequest -Uri $uriManifesto -Headers (@{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/octet-stream"; "X-GitHub-Api-Version" = "2022-11-28" }) -OutFile "$pastaDistribuicao/manifest.json"
+
+          $uriPacote = "https://api.github.com/repos/a75rodrigues/UHD-V4/releases/assets/$($assetPacote.id)"
+          Invoke-WebRequest -Uri $uriPacote -Headers (@{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/octet-stream"; "X-GitHub-Api-Version" = "2022-11-28" }) -OutFile "$pastaDistribuicao/$($assetPacote.name)"
+
+          $manifestoApp = Get-Content "$pastaDistribuicao/manifest.json" -Raw | ConvertFrom-Json
+          if ($manifestoApp.Pacote -ne $assetPacote.name -or
+              [string]::IsNullOrWhiteSpace($manifestoApp.Sha256) -or
+              $manifestoApp.Executavel -ne "UHD.App.exe") {
+            throw "O manifesto publicado pela aplicação não é compatível com o launcher."
+          }
+
+          $hashReal = (Get-FileHash "$pastaDistribuicao/$($assetPacote.name)" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hashReal -ne $manifestoApp.Sha256.ToLowerInvariant()) {
+            throw "O SHA256 do ZIP descarregado não corresponde ao manifesto da aplicação."
+          }
+
+          Write-Host "Distribuição UHD incorporada: $($releaseApp.tag_name)"
+          Write-Host "Pacote: $($assetPacote.name)"
+
+      - name: Criar pacote ZIP do servidor
+        shell: pwsh
+        run: |
+          $versao = "test.${{ github.run_number }}"
+          $pastaDistribuicao = "artefactos/Distribuicao"
+          New-Item -ItemType Directory -Force -Path $pastaDistribuicao | Out-Null
+          $pacote = "$pastaDistribuicao/UHD-Servidor-$versao-win-x64.zip"
+          Compress-Archive -Path "artefactos/Servidor-UHD/*" -DestinationPath $pacote -CompressionLevel Optimal
+          $hash = (Get-FileHash $pacote -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifesto = @{
+            Versao = $versao
+            Pacote = [System.IO.Path]::GetFileName($pacote)
+            Sha256 = $hash
+            Executavel = "UHD.Servidor.exe"
+            Runtime = "win-x64"
+            SelfContained = $true
+          } | ConvertTo-Json
+          Set-Content -Path "$pastaDistribuicao/manifest-servidor.json" -Value $manifesto -Encoding utf8
+          Write-Host "Pacote servidor: $pacote"
+          Write-Host "SHA256: $hash"
+
+      - name: Publicar Release de teste com o servidor
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/upgrade/signalr-tempo-real') || github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: servidor-test-${{ github.run_number }}
+          name: Servidor UHD teste ${{ github.run_number }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            artefactos/Distribuicao/UHD-Servidor-*-win-x64.zip
+            artefactos/Distribuicao/manifest-servidor.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
