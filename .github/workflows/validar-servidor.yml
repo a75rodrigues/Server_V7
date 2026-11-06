@@ -33,7 +33,7 @@ jobs:
       - name: Obter código
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'repository_dispatch' && 'upgrade/signalr-tempo-real' || github.ref }}
+          ref: ${{ (github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch') && 'upgrade/signalr-tempo-real' || github.ref }}
 
       - name: Instalar .NET 10
         uses: actions/setup-dotnet@v4
