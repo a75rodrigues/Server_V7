@@ -20,6 +20,9 @@ on:
       - '.github/workflows/validar-servidor.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   compilar:
     runs-on: windows-latest
@@ -38,13 +41,40 @@ jobs:
       - name: Compilar servidor
         run: dotnet build UHD.Servidor.csproj --configuration Release --no-restore
 
-      - name: Publicar servidor autónomo para teste
-        run: dotnet publish UHD.Servidor.csproj --configuration Release --runtime win-x64 --self-contained true --output artefactos/Servidor-UHD
+      - name: Publicar servidor autónomo para Windows x64
+        run: dotnet publish UHD.Servidor.csproj --configuration Release --runtime win-x64 --self-contained true -p:UseAppHost=true --output artefactos/Servidor-UHD
 
-      - name: Disponibilizar servidor de teste
-        uses: actions/upload-artifact@v4
+      - name: Criar pacote ZIP do servidor
+        shell: pwsh
+        run: |
+          $versao = "test.${{ github.run_number }}"
+          $pastaDistribuicao = "artefactos/Distribuicao"
+          New-Item -ItemType Directory -Force -Path $pastaDistribuicao | Out-Null
+          $pacote = "$pastaDistribuicao/UHD-Servidor-$versao-win-x64.zip"
+          Compress-Archive -Path "artefactos/Servidor-UHD/*" -DestinationPath $pacote -CompressionLevel Optimal
+          $hash = (Get-FileHash $pacote -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifesto = @{
+            Versao = $versao
+            Pacote = [System.IO.Path]::GetFileName($pacote)
+            Sha256 = $hash
+            Executavel = "UHD.Servidor.exe"
+            Runtime = "win-x64"
+            SelfContained = $true
+          } | ConvertTo-Json
+          Set-Content -Path "$pastaDistribuicao/manifest-servidor.json" -Value $manifesto -Encoding utf8
+          Write-Host "Pacote servidor: $pacote"
+          Write-Host "SHA256: $hash"
+
+      - name: Publicar Release de teste com o servidor
+        if: github.event_name == 'push' && github.ref == 'refs/heads/upgrade/signalr-tempo-real'
+        uses: softprops/action-gh-release@v2
         with:
-          name: UHD-servidor-teste-${{ github.run_number }}
-          path: artefactos/Servidor-UHD/
-          if-no-files-found: error
-          retention-days: 14
+          tag_name: servidor-test-${{ github.run_number }}
+          name: Servidor UHD teste ${{ github.run_number }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            artefactos/Distribuicao/UHD-Servidor-*-win-x64.zip
+            artefactos/Distribuicao/manifest-servidor.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
